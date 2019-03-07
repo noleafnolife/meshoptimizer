@@ -36,7 +36,19 @@ ifeq ($(config),trace)
 endif
 
 ifeq ($(config),release)
-	CXXFLAGS+=-O3 -DNDEBUG
+	CXXFLAGS+=-O3 -DNDEBUG -mno-sse2
+endif
+
+ifeq ($(config),release-sse2)
+	CXXFLAGS+=-O3 -DNDEBUG -msse2
+endif
+
+ifeq ($(config),release-ssse3)
+	CXXFLAGS+=-O3 -DNDEBUG -mssse3
+endif
+
+ifeq ($(config),release-avx)
+	CXXFLAGS+=-O3 -DNDEBUG -mavx
 endif
 
 ifeq ($(config),coverage)

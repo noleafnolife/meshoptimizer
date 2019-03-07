@@ -12,6 +12,11 @@
 #define SIMD_SSE
 #endif
 
+#if !defined(SIMD_SSE) && defined(__GNUC__) && defined(__SSE2__)
+#define SIMD_SSE
+#define SIMD_PSHUFB_FALLBACK
+#endif
+
 #if !defined(SIMD_SSE) && defined(_MSC_VER) && !defined(__clang__) && (defined(_M_IX86) || defined(_M_X64))
 #define SIMD_SSE
 #define SIMD_FALLBACK
@@ -23,7 +28,11 @@
 #endif
 
 #ifdef SIMD_SSE
+#ifdef SIMD_PSHUFB_FALLBACK
+#include <xmmintrin.h>
+#else
 #include <tmmintrin.h>
+#endif
 #endif
 
 #ifdef SIMD_NEON
@@ -44,6 +53,37 @@
 
 namespace meshopt
 {
+
+#ifdef SIMD_PSHUFB_FALLBACK
+__m128i _mm_shuffle_epi8_emu(__m128i v, __m128i m)
+{
+	__attribute__((aligned(16))) char vbuf[16];
+	_mm_store_si128((__m128i*)vbuf, v);
+
+	__attribute__((aligned(16))) char mbuf[16];
+	_mm_store_si128((__m128i*)mbuf, m);
+
+	__attribute__((aligned(16))) char rbuf[16];
+	rbuf[0] = vbuf[mbuf[0] & 15];
+	rbuf[1] = vbuf[mbuf[1] & 15];
+	rbuf[2] = vbuf[mbuf[2] & 15];
+	rbuf[3] = vbuf[mbuf[3] & 15];
+	rbuf[4] = vbuf[mbuf[4] & 15];
+	rbuf[5] = vbuf[mbuf[5] & 15];
+	rbuf[6] = vbuf[mbuf[6] & 15];
+	rbuf[7] = vbuf[mbuf[7] & 15];
+	rbuf[8] = vbuf[mbuf[8] & 15];
+	rbuf[9] = vbuf[mbuf[9] & 15];
+	rbuf[10] = vbuf[mbuf[10] & 15];
+	rbuf[11] = vbuf[mbuf[11] & 15];
+	rbuf[12] = vbuf[mbuf[12] & 15];
+	rbuf[13] = vbuf[mbuf[13] & 15];
+	rbuf[14] = vbuf[mbuf[14] & 15];
+	rbuf[15] = vbuf[mbuf[15] & 15];
+
+	return _mm_load_si128((__m128i*)rbuf);
+}
+#endif
 
 const unsigned char kVertexHeader = 0xa0;
 
@@ -480,7 +520,11 @@ static const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsi
 
 		__m128i shuf = decodeShuffleMask(mask0, mask1);
 
+	#ifdef SIMD_PSHUFB_FALLBACK
+		__m128i result = _mm_or_si128(_mm_and_si128(mask, _mm_shuffle_epi8_emu(rest, shuf)), _mm_andnot_si128(mask, sel));
+	#else
 		__m128i result = _mm_or_si128(_mm_shuffle_epi8(rest, shuf), _mm_andnot_si128(mask, sel));
+	#endif
 
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(buffer), result);
 
@@ -502,7 +546,11 @@ static const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsi
 
 		__m128i shuf = decodeShuffleMask(mask0, mask1);
 
+	#ifdef SIMD_PSHUFB_FALLBACK
+		__m128i result = _mm_or_si128(_mm_and_si128(mask, _mm_shuffle_epi8_emu(rest, shuf)), _mm_andnot_si128(mask, sel));
+	#else
 		__m128i result = _mm_or_si128(_mm_shuffle_epi8(rest, shuf), _mm_andnot_si128(mask, sel));
+	#endif
 
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(buffer), result);
 
