@@ -2,7 +2,6 @@ project(meshoptimizer)
 cmake_minimum_required(VERSION 3.0)
 
 option(BUILD_DEMO "Build demo" OFF)
-option(BUILD_TOOLS "Build tools" OFF)
 
 set(SOURCES
     src/meshoptimizer.h
@@ -29,12 +28,14 @@ else()
 	target_compile_options(meshoptimizer PRIVATE -Wall -Wextra -Werror)
 endif()
 
+if(CLANG_CL)
+    # Clang for Windows needs an additional flag for SSSE3 instructions.
+    target_compile_options(meshoptimizer PRIVATE -mssse3)
+endif()
+
 if(BUILD_DEMO)
-    add_executable(demo demo/main.cpp demo/miniz.cpp demo/tests.cpp tools/objparser.cpp)
+    add_executable(demo demo/main.cpp demo/miniz.cpp demo/objparser.cpp)
     target_link_libraries(demo meshoptimizer)
 endif()
 
-if(BUILD_TOOLS)
-    add_executable(meshencoder tools/meshencoder.cpp tools/objparser.cpp)
-    target_link_libraries(meshencoder meshoptimizer)
-endif()
+install(TARGETS meshoptimizer ARCHIVE DESTINATION lib/${DIST_DIR})

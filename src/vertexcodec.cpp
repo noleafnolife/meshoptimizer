@@ -12,14 +12,10 @@
 #define SIMD_SSE
 #endif
 
-#if !defined(SIMD_SSE) && defined(_MSC_VER) && !defined(__clang__) && (defined(_M_IX86) || defined(_M_X64))
+#if !defined(SIMD_SSE) && defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #define SIMD_SSE
 #define SIMD_FALLBACK
-#include <intrin.h> // __cpuid
-#endif
-
-#if !defined(SIMD_NEON) && defined(_MSC_VER) && (defined(_M_ARM) || defined(_M_ARM64))
-#define SIMD_NEON
+#include <intrin.h>
 #endif
 
 #ifdef SIMD_SSE
@@ -27,19 +23,7 @@
 #endif
 
 #ifdef SIMD_NEON
-#if defined(_MSC_VER) && defined(_M_ARM64)
-#include <arm64_neon.h>
-#else
 #include <arm_neon.h>
-#endif
-#endif
-
-#ifndef TRACE
-#define TRACE 0
-#endif
-
-#if TRACE
-#include <stdio.h>
 #endif
 
 namespace meshopt
@@ -73,19 +57,6 @@ inline unsigned char unzigzag8(unsigned char v)
 {
 	return -(v & 1) ^ (v >> 1);
 }
-
-#if TRACE
-struct Stats
-{
-	size_t size;
-	size_t header;
-	size_t bitg[4];
-	size_t bitb[4];
-};
-
-Stats* bytestats;
-Stats vertexstats[256];
-#endif
 
 static bool encodeBytesGroupZero(const unsigned char* buffer)
 {
@@ -208,16 +179,7 @@ static unsigned char* encodeBytes(unsigned char* data, unsigned char* data_end, 
 
 		assert(data + best_size == next);
 		data = next;
-
-#if TRACE > 1
-		bytestats->bitg[bitslog2]++;
-		bytestats->bitb[bitslog2] += best_size;
-#endif
 	}
-
-#if TRACE > 1
-	bytestats->header += header_size;
-#endif
 
 	return data;
 }
@@ -247,19 +209,9 @@ static unsigned char* encodeVertexBlock(unsigned char* data, unsigned char* data
 			vertex_offset += vertex_size;
 		}
 
-#if TRACE
-		const unsigned char* olddata = data;
-		bytestats = &vertexstats[k];
-#endif
-
 		data = encodeBytes(data, data_end, buffer, (vertex_count + kByteGroupSize - 1) & ~(kByteGroupSize - 1));
 		if (!data)
 			return 0;
-
-#if TRACE
-		bytestats = 0;
-		vertexstats[k].size += data - olddata;
-#endif
 	}
 
 	memcpy(last_vertex, &vertex_data[vertex_size * (vertex_count - 1)], vertex_size);
@@ -539,26 +491,21 @@ static uint8x16_t shuffleBytes(unsigned char mask0, unsigned char mask1, uint8x8
 	return vcombine_u8(r0, r1);
 }
 
-static void neonMoveMask(uint8x16_t mask, unsigned char& mask0, unsigned char& mask1)
+static int neonMoveMask(uint8x16_t mask)
 {
-	static const unsigned char byte_mask_data[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+	static const uint8x16_t byte_mask = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
 
-	uint8x16_t byte_mask = vld1q_u8(byte_mask_data);
 	uint8x16_t masked = vandq_u8(mask, byte_mask);
 
-#ifdef __aarch64__
-	// aarch64 has horizontal sums; MSVC doesn't expose this via arm64_neon.h so this path is exclusive to clang/gcc
-	mask0 = vaddv_u8(vget_low_u8(masked));
-	mask1 = vaddv_u8(vget_high_u8(masked));
-#else
-	// we need horizontal sums of each half of masked, which can be done in 3 steps (yielding sums of sizes 2, 4, 8)
+	// we need horizontal sums of each half of masked
+	// the endianness of the platform determines the order of high/low in sum1 below
+	// we assume little endian here
 	uint8x8_t sum1 = vpadd_u8(vget_low_u8(masked), vget_high_u8(masked));
 	uint8x8_t sum2 = vpadd_u8(sum1, sum1);
 	uint8x8_t sum3 = vpadd_u8(sum2, sum2);
 
-	mask0 = vget_lane_u8(sum3, 0);
-	mask1 = vget_lane_u8(sum3, 1);
-#endif
+	// note: here we treat 2b sum as a 16bit mask; this depends on endianness, see above
+	return vget_lane_u16(vreinterpret_u16_u8(sum3), 0);
 }
 
 static void transpose8(uint8x16_t& x0, uint8x16_t& x1, uint8x16_t& x2, uint8x16_t& x3)
@@ -604,8 +551,9 @@ static const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsi
 		uint8x16_t sel = vandq_u8(vcombine_u8(sel2222.val[0], sel2222.val[1]), vdupq_n_u8(3));
 
 		uint8x16_t mask = vceqq_u8(sel, vdupq_n_u8(3));
-		unsigned char mask0, mask1;
-		neonMoveMask(mask, mask0, mask1);
+		int mask16 = neonMoveMask(mask);
+		unsigned char mask0 = (unsigned char)(mask16 & 255);
+		unsigned char mask1 = (unsigned char)(mask16 >> 8);
 
 		uint8x8_t rest0 = vld1_u8(data + 4);
 		uint8x8_t rest1 = vld1_u8(data + 4 + kDecodeBytesGroupCount[mask0]);
@@ -624,8 +572,9 @@ static const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsi
 		uint8x16_t sel = vcombine_u8(sel44.val[0], sel44.val[1]);
 
 		uint8x16_t mask = vceqq_u8(sel, vdupq_n_u8(15));
-		unsigned char mask0, mask1;
-		neonMoveMask(mask, mask0, mask1);
+		int mask16 = neonMoveMask(mask);
+		unsigned char mask0 = (unsigned char)(mask16 & 255);
+		unsigned char mask1 = (unsigned char)(mask16 >> 8);
 
 		uint8x8_t rest0 = vld1_u8(data + 8);
 		uint8x8_t rest1 = vld1_u8(data + 8 + kDecodeBytesGroupCount[mask0]);
@@ -721,7 +670,6 @@ static const unsigned char* decodeVertexBlockSimd(const unsigned char* data, con
 
 #ifdef SIMD_SSE
 #define TEMP __m128i
-#define PREP() __m128i pi = _mm_cvtsi32_si128(*reinterpret_cast<const int*>(last_vertex + k))
 #define LOAD(i) __m128i r##i = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + j + i * vertex_count_aligned))
 #define GRP4(i) t0 = _mm_shuffle_epi32(r##i, 0), t1 = _mm_shuffle_epi32(r##i, 1), t2 = _mm_shuffle_epi32(r##i, 2), t3 = _mm_shuffle_epi32(r##i, 3)
 #define FIXD(i) t##i = pi = _mm_add_epi8(pi, t##i)
@@ -730,14 +678,18 @@ static const unsigned char* decodeVertexBlockSimd(const unsigned char* data, con
 
 #ifdef SIMD_NEON
 #define TEMP uint8x8_t
-#define PREP() uint8x8_t pi = vreinterpret_u8_u32(vld1_lane_u32(reinterpret_cast<uint32_t*>(last_vertex + k), vdup_n_u32(0), 0))
 #define LOAD(i) uint8x16_t r##i = vld1q_u8(buffer + j + i * vertex_count_aligned)
 #define GRP4(i) t0 = vget_low_u8(r##i), t1 = vreinterpret_u8_u32(vdup_lane_u32(vreinterpret_u32_u8(t0), 1)), t2 = vget_high_u8(r##i), t3 = vreinterpret_u8_u32(vdup_lane_u32(vreinterpret_u32_u8(t2), 1))
 #define FIXD(i) t##i = pi = vadd_u8(pi, t##i)
 #define SAVE(i) vst1_lane_u32(reinterpret_cast<uint32_t*>(savep), vreinterpret_u32_u8(t##i), 0), savep += vertex_size
 #endif
 
-		PREP();
+#ifdef SIMD_SSE
+		__m128i pi = _mm_cvtsi32_si128(*reinterpret_cast<const int*>(last_vertex + k));
+#endif
+#ifdef SIMD_NEON
+		uint8x8_t pi = vreinterpret_u8_u32(vld1_lane_u32(reinterpret_cast<uint32_t*>(last_vertex + k), vdup_n_u32(0), 0));
+#endif
 
 		unsigned char* savep = transposed + k;
 
@@ -774,7 +726,6 @@ static const unsigned char* decodeVertexBlockSimd(const unsigned char* data, con
 			SAVE(0), SAVE(1), SAVE(2), SAVE(3);
 
 #undef TEMP
-#undef PREP
 #undef LOAD
 #undef GRP4
 #undef FIXD
@@ -798,10 +749,6 @@ size_t meshopt_encodeVertexBuffer(unsigned char* buffer, size_t buffer_size, con
 
 	assert(vertex_size > 0 && vertex_size <= 256);
 	assert(vertex_size % 4 == 0);
-
-#if TRACE
-	memset(vertexstats, 0, sizeof(vertexstats));
-#endif
 
 	const unsigned char* vertex_data = static_cast<const unsigned char*>(vertices);
 
@@ -849,28 +796,6 @@ size_t meshopt_encodeVertexBuffer(unsigned char* buffer, size_t buffer_size, con
 
 	assert(data >= buffer + tail_size);
 	assert(data <= buffer + buffer_size);
-
-#if TRACE
-	size_t total_size = data - buffer;
-
-	for (size_t k = 0; k < vertex_size; ++k)
-	{
-		const Stats& vsk = vertexstats[k];
-
-		printf("%2d: %d bytes\t%.1f%%\t%.1f bpv", int(k), int(vsk.size), double(vsk.size) / double(total_size) * 100, double(vsk.size) / double(vertex_count) * 8);
-
-#if TRACE > 1
-		printf("\t\thdr %d bytes\tbit0 %d (%d bytes)\tbit1 %d (%d bytes)\tbit2 %d (%d bytes)\tbit3 %d (%d bytes)",
-		       int(vsk.header),
-		       int(vsk.bitg[0]), int(vsk.bitb[0]),
-		       int(vsk.bitg[1]), int(vsk.bitb[1]),
-		       int(vsk.bitg[2]), int(vsk.bitb[2]),
-		       int(vsk.bitg[3]), int(vsk.bitb[3]));
-#endif
-
-		printf("\n");
-	}
-#endif
 
 	return data - buffer;
 }
